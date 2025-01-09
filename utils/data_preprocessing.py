@@ -58,12 +58,23 @@ def prepare_datasets(train_file, val_file, test_file, preprocessor):
     # Fit preprocessor on training data
     preprocessor.fit(train_sentences)
     
-    # Convert sentences to sequences
-    train_sequences = [preprocessor.text_to_sequence(sent) for sent in train_sentences]
-    val_sequences = [preprocessor.text_to_sequence(sent) for sent in val_sentences]
-    test_sequences = [preprocessor.text_to_sequence(sent) for sent in test_sentences]
+    # Convert sentences to sequences with proper padding
+    def process_sentence(sent):
+        tokens = sent.split()[:preprocessor.max_length]  # Clip to max length
+        padded = tokens + ['<EOL>'] * (preprocessor.max_length - len(tokens))  # Pad with EOL
+        return [preprocessor.word2idx.get(token, preprocessor.word2idx['<EOL>']) for token in padded]
     
-    return np.array(train_sequences), np.array(val_sequences), np.array(test_sequences)
+    train_sequences = [process_sentence(sent) for sent in train_sentences]
+    val_sequences = [process_sentence(sent) for sent in val_sentences]
+    test_sequences = [process_sentence(sent) for sent in test_sentences]
+    
+    # Create Word2Vec embeddings
+    word2vec_model = create_word2vec_embeddings(train_sentences)
+    
+    return (np.array(train_sequences), 
+            np.array(val_sequences), 
+            np.array(test_sequences),
+            word2vec_model)
 
 def create_word2vec_embeddings(sentences, embed_dim=300):
     # Train Word2Vec model

@@ -16,28 +16,23 @@ class LSTMLanguageModel(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True  # Use bidirectional LSTM
+            bidirectional=False
         )
         
         # Dropout layer
         self.dropout = nn.Dropout(dropout)
         
         # Output layer
-        self.fc = nn.Linear(hidden_dim * 2, hidden_dim)  # *2 for bidirectional
-        self.output = nn.Linear(hidden_dim, vocab_size)
+        self.fc = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
         # x shape: (batch_size, seq_length)
         embeds = self.embedding(x)  # (batch_size, seq_length, embed_dim)
         embeds = self.embed_dropout(embeds)
         
-        lstm_out, _ = self.lstm(embeds)  # (batch_size, seq_length, hidden_dim*2)
+        lstm_out, _ = self.lstm(embeds)  # (batch_size, seq_length, hidden_dim)
         lstm_out = self.dropout(lstm_out)
         
-        # Dense layer with ReLU
-        dense = torch.relu(self.fc(lstm_out))
-        dense = self.dropout(dense)
-        
-        # Output layer
-        logits = self.output(dense)  # (batch_size, seq_length, vocab_size)
-        return logits 
+        # Output layer for all time steps
+        logits = self.fc(lstm_out)  # (batch_size, seq_length, vocab_size)
+        return logits

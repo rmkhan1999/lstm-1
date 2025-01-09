@@ -1,21 +1,24 @@
 import torch
 from models.lstm_model import LSTMLanguageModel
-from utils.data_preprocessing import TextPreprocessor, load_and_preprocess_data
+from utils.data_preprocessing import (
+    TextPreprocessor, 
+    load_and_preprocess_data, 
+    prepare_datasets
+)
+from torch.utils.data import DataLoader
+from utils.dataset import NextWordDataset
 
 def predict_next_words(model, preprocessor, input_text, device, max_words=5):
     model.eval()
     
     # Convert input text to sequence
-    current_sequence = preprocessor.text_to_sequence(input_text)
-    
-    # Remove padding/EOL tokens from input
-    input_tokens = input_text.split()
-    input_len = len(input_tokens)
+    tokens = input_text.split()
+    current_sequence = [preprocessor.word2idx.get(token, preprocessor.word2idx['<EOL>']) for token in tokens]
     
     generated_words = []
     
     with torch.no_grad():
-        for _ in range(max_words):
+        while len(generated_words) < max_words:
             # Prepare input tensor
             input_tensor = torch.LongTensor([current_sequence]).to(device)
             
@@ -35,7 +38,7 @@ def predict_next_words(model, preprocessor, input_text, device, max_words=5):
                     next_word_idx = idx
                     break
             
-            if next_word_idx is None:
+            if next_word_idx is None or next_word_idx == preprocessor.word2idx['<EOL>']:
                 break
                 
             # Add the predicted word
@@ -43,9 +46,30 @@ def predict_next_words(model, preprocessor, input_text, device, max_words=5):
             generated_words.append(next_word)
             
             # Update sequence for next prediction
-            current_sequence = current_sequence[1:] + [next_word_idx]
+            current_sequence = current_sequence + [next_word_idx]
     
     return generated_words
+
+def calculate_accuracy(model, test_loader, preprocessor, device):
+    model.eval()
+    total_correct = 0
+    total_words = 0
+    
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            
+            # Get predictions
+            predictions = outputs.argmax(dim=-1)
+            
+            # Calculate accuracy (excluding PAD tokens)
+            mask = targets != preprocessor.word2idx['<PAD>']
+            correct = (predictions == targets) & mask
+            total_correct += correct.sum().item()
+            total_words += mask.sum().item()
+    
+    return total_correct / total_words
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,11 +83,19 @@ def main():
     preprocessor.idx2word = checkpoint['preprocessor_idx2word']
     preprocessor.vocab_size = len(preprocessor.word2idx)
     
+    # Load test data
+    _, _, test_sequences, _ = prepare_datasets(
+        'data/train.txt',
+        'data/val.txt',
+        'data/test.txt',
+        preprocessor
+    )
+    
     # Initialize model with same parameters as training
     model = LSTMLanguageModel(
         vocab_size=len(preprocessor.word2idx),
-        embed_dim=256,  # Match training dimensions
-        hidden_dim=256,  # Match training dimensions
+        embed_dim=300,
+        hidden_dim=256,
         num_layers=2,
         dropout=0.5
     ).to(device)
@@ -82,6 +114,13 @@ def main():
     print("\nDebug Info:")
     print(f"Vocabulary size: {len(preprocessor.word2idx)}")
     print(f"Sample vocabulary: {list(preprocessor.word2idx.items())[:10]}")
+    
+    # Calculate accuracy on test set
+    max_target_length = 20  # Same as training
+    test_dataset = NextWordDataset(test_sequences, max_target_length)
+    test_loader = DataLoader(test_dataset, batch_size=32)
+    accuracy = calculate_accuracy(model, test_loader, preprocessor, device)
+    print(f"\nTest Accuracy: {accuracy:.4f}")
 
 if __name__ == '__main__':
     main() 

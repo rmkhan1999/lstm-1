@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 from utils.data_preprocessing import TextPreprocessor, load_and_preprocess_data, create_word2vec_embeddings, prepare_datasets
 from utils.dataset import NextWordDataset
 from models.lstm_model import LSTMLanguageModel
+import numpy as np
 
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, device, preprocessor, patience=5):
     best_val_loss = float('inf')
@@ -20,9 +21,11 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             inputs, targets = inputs.to(device), targets.to(device)
             
             # Forward pass
-            outputs = model(inputs)
-            outputs = outputs.view(-1, outputs.size(-1))
-            targets = targets.view(-1)
+            outputs = model(inputs)  # Shape: [batch_size, seq_length, vocab_size]
+            
+            # Reshape outputs for CrossEntropyLoss
+            outputs = outputs.view(-1, outputs.size(-1))  # [batch_size*seq_length, vocab_size]
+            targets = targets.view(-1)  # [batch_size*seq_length]
             
             # Calculate loss
             loss = criterion(outputs, targets)
@@ -47,8 +50,11 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
                 outputs = model(inputs)
+                
+                # Reshape outputs and targets for loss calculation
                 outputs = outputs.view(-1, outputs.size(-1))
                 targets = targets.view(-1)
+                
                 val_loss += criterion(outputs, targets).item()
         
         avg_train_loss = total_loss/len(train_loader)
@@ -85,50 +91,70 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
 def main():
     # Device configuration
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if not torch.cuda.is_available():
+        print("WARNING: CUDA is not available. Running on CPU!")
+        device = torch.device('cpu')
+    else:
+        print(f"Found {torch.cuda.device_count()} CUDA device(s)")
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        device = torch.device('cuda:0')
+        torch.backends.cudnn.benchmark = True  # Enable cuDNN auto-tuner
+    
+    print(f"Training on device: {device}")
     
     # Hyperparameters
     max_length = 20
-    embed_dim = 256  # Reduced from 300
-    hidden_dim = 256  # Reduced from 512
-    num_layers = 2
-    dropout = 0.5
-    batch_size = 32   # Reduced from 64
-    num_epochs = 50
+    embed_dim = 300  # Word2Vec dimension
+    hidden_dim = 512  # Increased from 256
+    num_layers = 3    # Increased from 2
+    dropout = 0.3     # Reduced from 0.5
+    batch_size = 16   # Reduced from 32
+    num_epochs = 100  # Increased from 50
     learning_rate = 0.001
+    weight_decay = 1e-6  # Added explicit weight decay
     
     # Initialize preprocessor
     preprocessor = TextPreprocessor(max_length=max_length)
     
-    # Load and preprocess data
-    train_sequences, val_sequences, test_sequences = prepare_datasets(
+    # Load and preprocess data with Word2Vec embeddings
+    train_sequences, val_sequences, test_sequences, word2vec_model = prepare_datasets(
         'data/train.txt',
         'data/val.txt',
         'data/test.txt',
         preprocessor
     )
     
-    # Create datasets and dataloaders
-    train_dataset = NextWordDataset(train_sequences)
-    val_dataset = NextWordDataset(val_sequences)
+    # Create embedding matrix from Word2Vec
+    embedding_matrix = np.zeros((preprocessor.vocab_size, embed_dim))
+    for word, idx in preprocessor.word2idx.items():
+        if word in word2vec_model.wv:
+            embedding_matrix[idx] = word2vec_model.wv[word]
+    
+    # Create datasets and dataloaders with fixed target length
+    max_target_length = 20  # Maximum length for target sequences
+    train_dataset = NextWordDataset(train_sequences, max_target_length)
+    val_dataset = NextWordDataset(val_sequences, max_target_length)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
     
-    # Initialize model
+    # Initialize model with pre-trained embeddings
     model = LSTMLanguageModel(
         vocab_size=preprocessor.vocab_size,
         embed_dim=embed_dim,
-        hidden_dim=hidden_dim,
-        num_layers=num_layers,
-        dropout=dropout
+        hidden_dim=512,  # Increased capacity
+        num_layers=3,    # More layers
+        dropout=0.3      # Reduced dropout
     ).to(device)
+    
+    # Load pre-trained embeddings
+    model.embedding.weight.data.copy_(torch.from_numpy(embedding_matrix))
     
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss(ignore_index=preprocessor.word2idx['<PAD>'])
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', patience=2, factor=0.5, verbose=True
+        optimizer, 'min', patience=3, factor=0.7, verbose=True
     )
     
     # Train the model
